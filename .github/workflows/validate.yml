@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Resolve declared dependencies
-        run: uv sync --refresh --group dev
+        run: uv sync --refresh --upgrade --group dev
       - name: Offline module and bundle tests
         env:
           AMPLIFIER_HOME: ${{ runner.temp }}/imagegen-amplifier

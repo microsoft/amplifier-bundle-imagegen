@@ -42,3 +42,7 @@ evidence; manifests continue to track `@main`.
 The two unchanged predecessor files `tool.py` and `tests/test_tool.py` retain
 their original trailing whitespace. New and adapted files pass whitespace checks;
 the relocation deliberately avoids normalizing implementation or test bytes.
+
+The documented and CI latest-resolution command includes `--upgrade` as well as
+`--refresh`, so repeated runs unlock an existing ignored local lockfile. The
+recorded test graph and historical execution evidence are unchanged.

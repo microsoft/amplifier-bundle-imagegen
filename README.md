@@ -63,7 +63,7 @@ and delivery of image pixels remain the host's responsibility.
 ## Develop and qualify
 
 ```sh
-uv sync --refresh --group dev
+uv sync --refresh --upgrade --group dev
 uv run --no-sync python -B -m pytest -q -p no:cacheprovider
 ```
 
