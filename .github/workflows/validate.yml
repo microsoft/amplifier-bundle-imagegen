@@ -1,0 +1,21 @@
+name: Validate imagegen bundle
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - name: Resolve declared dependencies
+        run: uv sync --refresh --upgrade --group dev
+      - name: Offline module and bundle tests
+        env:
+          AMPLIFIER_HOME: ${{ runner.temp }}/imagegen-amplifier
+        run: uv run --no-sync python -B -m pytest -q -p no:cacheprovider

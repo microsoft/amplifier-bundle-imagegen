@@ -1,0 +1,12 @@
+bundle:
+  name: imagegen
+  version: 0.1.0
+  description: Discoverable imagegen guidance without mounting an image tool.
+  namespace_root: ..
+
+tools:
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        - "@imagegen:skills"

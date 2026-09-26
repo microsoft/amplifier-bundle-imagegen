@@ -1,0 +1,33 @@
+[project]
+name = "amplifier-bundle-imagegen"
+version = "0.1.0"
+description = "Composable provider-neutral image generation and editing for Amplifier"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "amplifier-core",
+  "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+  "amplifier-module-tool-skills @ git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills",
+  "amplifier-module-tool-image",
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
+]
+
+[tool.uv]
+package = false
+no-build-package = ["amplifier-core"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.uv.sources]
+amplifier-module-tool-image = { path = "modules/tool-image", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "modules/tool-image/tests"]
+addopts = "--import-mode=importlib"
