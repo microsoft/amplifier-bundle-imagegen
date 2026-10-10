@@ -386,6 +386,13 @@ class WorkspaceImageTool:
                     result = await self.backend().generate(
                         action=action, prompt=prompt, images=inputs, **options
                     )
+                    resolved_model = result.get("model", descriptor["model"])
+                    if (
+                        not isinstance(resolved_model, str)
+                        or not resolved_model.strip()
+                        or len(resolved_model) > 200
+                    ):
+                        raise ValueError("Backend returned an invalid model identifier.")
                     data = result["data"]
                     info = image_info(data)
                     if info["mimeType"] != "image/png" or info["mode"] not in {
@@ -401,7 +408,7 @@ class WorkspaceImageTool:
                         "requestHash": request_hash,
                         "operation": action,
                         "backend": capabilities["backend"],
-                        "model": descriptor["model"],
+                        "model": resolved_model,
                         "inputs": lineage,
                         "options": options,
                         "artifact": {

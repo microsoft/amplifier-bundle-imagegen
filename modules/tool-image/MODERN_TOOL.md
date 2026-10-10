@@ -110,6 +110,11 @@ Host-supplied backends implement synchronous `describe()` and async
 `generate(action, prompt, images, size, quality, background)`. `describe()` returns
 `configured`, `missing`, `model`, `operations`, and optionally supported `options`
 and `defaults`. `generate()` returns `data: bytes` and optional `request_id`/`usage`.
+An optional nonempty `model` string (at most 200 characters) records the actual
+model used in the receipt. For automatic selection, keep `describe().model` a
+stable selection identifier: it participates in request identity. Resolve the
+model during generation and return it in the result; completed requests retain
+their original receipt when the catalog changes.
 Image inputs contain exact `data`, `mimeType`, and `name`. The host owns the
 backend's lifecycle; the tool only closes built-in clients it created and does not
 overwrite existing registrations.

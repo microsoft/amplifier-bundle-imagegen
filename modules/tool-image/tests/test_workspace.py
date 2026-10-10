@@ -284,3 +284,40 @@ async def test_read_policy_denies_upload_before_backend_or_output_claim(setup):
     tool.config["allowed_read_paths"] = ["public"]
     assert not (await tool.execute(edit)).success
     assert not backend.calls and not (root / "artifacts").exists()
+
+
+async def test_automatic_selection_records_actual_model_without_changing_request_identity(setup):
+    tool, backend, root, capabilities = setup
+    backend.describe = lambda: {"configured": True, "model": "auto", "operations": ["generate", "edit"]}
+    original_generate = backend.generate
+    selected_model = "fixture-1"
+
+    async def generate(**args):
+        return {**await original_generate(**args), "model": selected_model}
+
+    backend.generate = generate
+    first = await tool.execute(request())
+    assert first.success and first.output["model"] == "fixture-1"
+    selected_model = "fixture-2"
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    assert (await restarted.execute(request())).output == first.output
+    assert len(backend.calls) == 1
+    second = await restarted.execute(request("second"))
+    assert second.success and second.output["model"] == "fixture-2"
+    assert second.output["requestHash"] == first.output["requestHash"]
+    assert len(backend.calls) == 2
+
+
+@pytest.mark.parametrize("model", [None, "", " ", 123, "x" * 201])
+async def test_invalid_resolved_model_preserves_unknown_effect_without_replay(setup, model):
+    tool, backend, root, capabilities = setup
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), "model": model}
+
+    backend.generate = generate
+    result = await tool.execute(request())
+    assert not result.success and result.output["status"] == "unknown"
+    assert (await tool.execute(request())).output == result.output
+    assert len(backend.calls) == 1
