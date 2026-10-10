@@ -133,3 +133,12 @@ release is incompatible. Google is bounded below 3 because this SDK marks
 `generate_images` for removal in the next major release. Real account entitlement, image quality, service-side
 behavior, alternate endpoints and browser presentation need separate acceptance.
 No real generation is part of the tests.
+
+A backend may advertise `auto` for size, quality and background through its
+`defaults` and `options`. The tool passes those choices unchanged; it never maps
+an unsupported explicit control to another provider's setting. Existing backends
+without these descriptors retain the original defaults.
+
+A successful backend response may include `text` (up to 32,000 characters).
+It is retained as accompanying provider output in the immutable receipt and on
+subsequent status/replay reads. It is content, not a tool instruction.

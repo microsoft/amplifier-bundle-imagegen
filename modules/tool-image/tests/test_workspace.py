@@ -321,3 +321,38 @@ async def test_invalid_resolved_model_preserves_unknown_effect_without_replay(se
     assert not result.success and result.output["status"] == "unknown"
     assert (await tool.execute(request())).output == result.output
     assert len(backend.calls) == 1
+
+
+async def test_backend_automatic_controls_and_accompanying_text_are_durable(setup):
+    tool, backend, root, capabilities = setup
+    backend.describe = lambda: {
+        'configured': True, 'model': 'auto', 'operations': ['generate', 'edit'],
+        'defaults': dict(size='auto', quality='auto', background='auto'),
+        'options': dict(size=['auto'], quality=['auto'], background=['auto']),
+    }
+    original_generate = backend.generate
+    async def generate(**args):
+        return {**await original_generate(**args), 'model': 'resolved-image-model', 'text': 'A red square.'}
+    backend.generate = generate
+    first = await tool.execute(request())
+    assert first.success, first.error
+    assert first.output['text'] == 'A red square.'
+    assert first.output['options'] == dict(size='auto', quality='auto', background='auto')
+    assert backend.calls[0]['quality'] == 'auto'
+    assert (await tool.execute(request())).output == first.output
+    assert len(backend.calls) == 1
+    rejected = await tool.execute(request('unsupported', quality='high'))
+    assert not rejected.success and len(backend.calls) == 1
+
+
+@pytest.mark.parametrize('text', [42, 'x' * 32001])
+async def test_invalid_accompanying_text_is_unknown_and_never_replayed(setup, text):
+    tool, backend, root, capabilities = setup
+    original_generate = backend.generate
+    async def generate(**args):
+        return {**await original_generate(**args), 'text': text}
+    backend.generate = generate
+    first = await tool.execute(request())
+    assert not first.success and first.output['status'] == 'unknown'
+    assert (await tool.execute(request())).output['status'] == 'unknown'
+    assert len(backend.calls) == 1

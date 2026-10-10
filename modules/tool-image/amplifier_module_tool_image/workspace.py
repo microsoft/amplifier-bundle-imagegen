@@ -67,6 +67,7 @@ class WorkspaceImageTool:
             "prompt": {"type": "string", "minLength": 1, "maxLength": 32000},
             "size": {
                 "enum": [
+                    "auto",
                     "1024x1024",
                     "1536x1024",
                     "1024x1536",
@@ -74,7 +75,7 @@ class WorkspaceImageTool:
                     "1024x1792",
                 ]
             },
-            "quality": {"enum": ["low", "medium", "high", "standard", "hd"]},
+            "quality": {"enum": ["auto", "low", "medium", "high", "standard", "hd"]},
             "background": {"enum": ["opaque", "transparent", "auto"]},
             "images": {
                 "type": "array",
@@ -393,6 +394,9 @@ class WorkspaceImageTool:
                         or len(resolved_model) > 200
                     ):
                         raise ValueError("Backend returned an invalid model identifier.")
+                    text = result.get("text")
+                    if text is not None and (not isinstance(text, str) or len(text) > 32000):
+                        raise ValueError("Backend returned invalid accompanying text.")
                     data = result["data"]
                     info = image_info(data)
                     if info["mimeType"] != "image/png" or info["mode"] not in {
@@ -422,6 +426,7 @@ class WorkspaceImageTool:
                         ),
                         "providerRequestId": result.get("request_id"),
                         "usage": result.get("usage"),
+                        **({"text": text} if text is not None else {}),
                     }
                 except BaseException as exc:
                     receipt = {
