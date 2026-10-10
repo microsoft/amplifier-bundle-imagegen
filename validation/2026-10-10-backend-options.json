@@ -1,0 +1,7 @@
+{
+  "sourceBase": "f5a0884fd869a4f1b0078e1d598a7ce8f6054597",
+  "environment": "owned Linux ARM64 DTU; isolated source and dependencies",
+  "offline": "111 passed, including real Foundation/Core subdirectory loading; network blocked",
+  "scope": "Automatic backend controls and durable accompanying text; existing backend defaults and unknown-effect behavior retained",
+  "liveQualification": "Host-owned validation is separate from this portable module test evidence"
+}
