@@ -117,6 +117,8 @@ class WorkspaceImageTool:
             missing.append("session_workspace")
         if self.config.get("allow_paid") is not True:
             missing.append("paid_image_calls_not_enabled")
+        if self.config.get("routing_blocked"):
+            missing.append("legacy_image_selection_requires_review")
         if not backend:
             missing.append("selected_image_backend_not_mounted")
         elif descriptor.get("configured") is not True:
@@ -259,9 +261,14 @@ class WorkspaceImageTool:
                 "message": "The operation was claimed. Its outcome is unknown; do not replay it.",
             }
         receipt = json.loads(self.read(result))
-        if receipt.get("status") == "completed":
-            data = self.read(self.path(receipt["artifact"]["path"]))
-            if digest(data) != receipt["artifact"]["sha256"]:
+        artifacts = (
+            [receipt["artifact"]]
+            if receipt.get("status") == "completed"
+            else receipt.get("evidenceArtifacts", [])
+        )
+        for artifact in artifacts:
+            data = self.read(self.path(artifact["path"]))
+            if digest(data) != artifact["sha256"]:
                 raise ValueError("Saved image no longer matches its receipt.")
         return receipt
 
@@ -366,11 +373,12 @@ class WorkspaceImageTool:
             }
             request_hash = digest(encoded(request))
             if folder.exists():
+                receipt = self.existing(folder, request_hash)
                 return ToolResult(
-                    success=True, output=self.existing(folder, request_hash)
+                    success=receipt.get("status") == "completed", output=receipt
                 )
             # Validate the complete output subtree before claiming or calling.
-            for name in ("request.json", "image.png", "receipt.json"):
+            for name in ("request.json", "image.png", "evidence-0.png", "receipt.json"):
                 self.path(folder / name, write=True)
             parent = self.directory_fd(folder.parent, create=True)
             try:
@@ -378,8 +386,9 @@ class WorkspaceImageTool:
                     os.mkdir(folder.name, 0o700, dir_fd=parent)
                     os.fsync(parent)
                 except FileExistsError:
+                    receipt = self.existing(folder, request_hash)
                     return ToolResult(
-                        success=True, output=self.existing(folder, request_hash)
+                        success=receipt.get("status") == "completed", output=receipt
                     )
             finally:
                 os.close(parent)
@@ -390,10 +399,54 @@ class WorkspaceImageTool:
                     "request.json",
                     encoded({**request, "requestHash": request_hash}),
                 )
+                validated_image = None
+                failure = None
                 try:
-                    result = await self.backend().generate(
-                        action=action, prompt=prompt, images=inputs, **options
+                    backend = self.backend()
+                    invoke = self.coordinator.get_capability("image.backend_invoke")
+                    arguments = dict(action=action, prompt=prompt, images=inputs, **options)
+                    result = (
+                        await invoke(backend, arguments)
+                        if callable(invoke)
+                        else await backend.generate(**arguments)
                     )
+                    if not isinstance(result, dict):
+                        raise ValueError("Backend returned an invalid image result.")
+                    data = result["data"]
+                    info = image_info(data)
+                    if info["mimeType"] != "image/png":
+                        raise ValueError("Backend must return a PNG.")
+                    # Retain bounded, decoded PNG bytes even if status, controls
+                    # or later metadata prevent a completed artifact.
+                    validated_image = (data, info)
+                    if info["mode"] not in {"RGB", "RGBA"}:
+                        raise ValueError("Backend must return an RGB/RGBA PNG.")
+                    status = result.get("status", "completed")
+                    if status not in ("completed", "blocked", "failed", "unknown"):
+                        raise ValueError("Backend returned an invalid image status.")
+                    reason = None
+                    if status != "completed":
+                        reason = result.get("reason")
+                        if not isinstance(reason, str) or not re.fullmatch(
+                            r"[a-z][a-z0-9_]{0,127}", reason
+                        ):
+                            reason = "incomplete_image_result"
+                    if options["size"] != "auto" and options["size"] != (
+                        f"{info['width']}x{info['height']}"
+                    ):
+                        if status == "completed":
+                            status, reason = "failed", "output_dimensions_mismatch"
+                    if options["background"] != "auto":
+                        with Image.open(io.BytesIO(data)) as image:
+                            # Pixel alpha, including RGB PNG tRNS, determines
+                            # opacity; an RGBA mode alone proves neither choice.
+                            transparent = (
+                                image.convert("RGBA").getchannel("A").getextrema()[0]
+                                < 255
+                            )
+                        if transparent != (options["background"] == "transparent"):
+                            if status == "completed":
+                                status, reason = "failed", "output_background_mismatch"
                     resolved_model = result.get("model", descriptor["model"])
                     if (
                         not isinstance(resolved_model, str)
@@ -404,17 +457,18 @@ class WorkspaceImageTool:
                     text = result.get("text")
                     if text is not None and (not isinstance(text, str) or len(text) > 32000):
                         raise ValueError("Backend returned invalid accompanying text.")
-                    data = result["data"]
-                    info = image_info(data)
-                    if info["mimeType"] != "image/png" or info["mode"] not in {
-                        "RGB",
-                        "RGBA",
-                    }:
-                        raise ValueError("Backend must return an RGB/RGBA PNG.")
-                    self.write(directory, "image.png", data)
+                    provider_request_id = result.get("request_id")
+                    if provider_request_id is not None and (
+                        not isinstance(provider_request_id, str)
+                        or len(provider_request_id) > 1024
+                    ):
+                        raise ValueError("Backend returned an invalid request identifier.")
+                    usage = result.get("usage")
+                    if usage is not None and not isinstance(usage, dict):
+                        raise ValueError("Backend returned invalid usage metadata.")
                     receipt = {
                         "schema": "amplifier.image.receipt.v1",
-                        "status": "completed",
+                        "status": status,
                         "requestId": folder.name,
                         "requestHash": request_hash,
                         "operation": action,
@@ -422,20 +476,21 @@ class WorkspaceImageTool:
                         "model": resolved_model,
                         "inputs": lineage,
                         "options": options,
-                        "artifact": {
-                            "path": str((folder / "image.png").relative_to(self.root)),
-                            "sha256": digest(data),
-                            "bytes": len(data),
-                            **info,
-                        },
                         "receiptPath": str(
                             (folder / "receipt.json").relative_to(self.root)
                         ),
-                        "providerRequestId": result.get("request_id"),
-                        "usage": result.get("usage"),
+                        "providerRequestId": provider_request_id,
+                        "usage": usage,
                         **({"text": text} if text is not None else {}),
+                        **({"reasonCode": reason} if reason is not None else {}),
                     }
+                    # Validate metadata before choosing a success filename. A
+                    # serialization failure must not strand a paid PNG as an
+                    # unreceipted success artifact.
+                    if len(encoded(receipt)) > 128000:
+                        raise ValueError("Image receipt is too large.")
                 except BaseException as exc:
+                    failure = exc
                     receipt = {
                         "schema": "amplifier.image.receipt.v1",
                         "status": "unknown",
@@ -444,18 +499,35 @@ class WorkspaceImageTool:
                         "errorType": type(exc).__name__,
                         "message": "The image request did not complete locally. Do not automatically replay it.",
                     }
-                    self.write(directory, "receipt.json", encoded(receipt))
-                    if isinstance(
-                        exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
-                    ):
-                        raise
-                    return ToolResult(
-                        success=False,
-                        output=receipt,
-                        error={"code": "image_outcome_unknown"},
-                    )
+                if validated_image is not None:
+                    data, info = validated_image
+                    completed = receipt["status"] == "completed"
+                    name = "image.png" if completed else "evidence-0.png"
+                    self.write(directory, name, data)
+                    artifact = {
+                        "path": str((folder / name).relative_to(self.root)),
+                        "sha256": digest(data),
+                        "bytes": len(data),
+                        **info,
+                    }
+                    if completed:
+                        receipt["artifact"] = artifact
+                    else:
+                        receipt["evidenceArtifacts"] = [artifact]
                 self.write(directory, "receipt.json", encoded(receipt))
-                return ToolResult(success=True, output=receipt)
+                if isinstance(
+                    failure, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+                ):
+                    raise failure
+                return ToolResult(
+                    success=receipt["status"] == "completed",
+                    output=receipt,
+                    error=(
+                        {"code": "image_outcome_unknown"}
+                        if failure is not None
+                        else None
+                    ),
+                )
             finally:
                 os.close(directory)
         except (ValueError, OSError, KeyError, TypeError) as exc:

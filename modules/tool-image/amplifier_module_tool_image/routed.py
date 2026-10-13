@@ -6,13 +6,19 @@ execution; a generic resolver owns candidate order. No vendor SDK is used here.
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
-import json
 import os
+from copy import deepcopy
 
 from amplifier_core import ToolResult
 
-from .workspace import WorkspaceImageTool, MAX_BYTES, MAX_SIDE, digest, encoded, image_info
+from .workspace import (
+    MAX_BYTES,
+    MAX_SIDE,
+    WorkspaceImageTool,
+    digest,
+    encoded,
+    image_info,
+)
 
 PROTOCOL = "amplifier.image-operation.v1"
 METHODS = ("get_image_generation_capabilities", "prepare_image_generation", "generate_image")
@@ -188,7 +194,7 @@ class RoutedImageTool(WorkspaceImageTool):
         images, texts = [], []
         for output in outputs:
             if not isinstance(output, dict):
-                raise ValueError("Invalid image output.")
+                raise TypeError("Invalid image output.")
             if output.get("kind") == "text":
                 if not isinstance(output.get("text"), str):
                     raise ValueError("Invalid accompanying text.")

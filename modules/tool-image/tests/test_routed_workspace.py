@@ -1,15 +1,14 @@
 import asyncio
-from copy import deepcopy
 import hashlib
+from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from PIL import Image
 import pytest
-
 from amplifier_foundation.spawn_utils import ProviderPreference
 from amplifier_module_tool_image.routed import PROTOCOL, RoutedImageTool
+from PIL import Image
 
 
 def png():
@@ -156,6 +155,7 @@ async def test_malformed_metadata_keeps_recoverable_bytes_without_success(tmp_pa
 def test_corrupt_pixel_stream_is_not_a_valid_image():
     import struct
     import zlib
+
     from amplifier_module_tool_image.workspace import image_info
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
