@@ -6,6 +6,11 @@ the consuming host. Runtime code must not depend on or name consuming applicatio
 Preserve explicit backend selection, provider neutrality, durable request identity,
 unknown-effect handling and original artifacts. Do not add implicit paid fallback.
 
+For routed-image design, read `docs/DIRECTION.md`, `docs/VISION.md` and the two
+contracts it indexes. They are drafts; do not report them as implemented or
+frozen. Keep the current runtime guidance above until an implementation change
+is separately verified. No required Core-provider changes belong to this work.
+
 Keep mutable Amplifier Git sources at canonical Microsoft `@main`. Record exact
 resolved revisions as validation evidence, not manifest pins. Use isolated caches
 and environments. Offline tests must block real network requests and qualify the

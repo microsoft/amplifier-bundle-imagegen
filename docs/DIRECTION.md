@@ -1,0 +1,83 @@
+# Routed image direction: ownership and review
+
+This packet establishes proposed direction, not delivered routing support.
+The [README](../README.md) and [current tool documentation](../modules/tool-image/MODERN_TOOL.md)
+continue to describe the released named-backend path. No implementation, settings,
+provider policy, required Core interface or existing receipt is changed by these documents.
+
+## Read in order
+
+1. [Vision](VISION.md): one portable capability, routed through permitted connections.
+2. [IC — image lifecycle](../contracts/image-capability.v1.md): effect identity,
+   originals, workspace boundaries and verifiable outputs.
+3. [PI — provider exchange](../contracts/provider-image-operation.v1.md): optional
+   preparation/execution without vendor or host dependencies.
+4. [Exchange specification](IMAGE-OPERATION-SPEC.md): proposed structural methods
+   and data shapes, subordinate to PI rather than a second set of promises.
+
+## One owner per boundary
+
+| Boundary | Canonical owner | This capability's obligation |
+| --- | --- | --- |
+| Image intention, durable effect and artifact lifecycle | IC in this repo | Enforce and qualify the operation |
+| Experimental request/plan/result exchange consumed here | PI and schema note in this repo | Validate plain data, never import provider peers |
+| Generic model-role consumption | Foundation convention | Consume optional session capability, not strategy files |
+| Candidate rankings and policy compatibility | Active routing implementation | Preserve selected identity, scope and refusals |
+| Native wire behavior and account transport | Each provider | Call only its recognized optional surface |
+| Composition, admission and presentation | Consuming host | Preserve restrictions; supply honest result evidence |
+
+The [generic consumer draft](https://github.com/microsoft/amplifier-foundation/blob/main/contracts/model-role-consumption.v1.md)
+is a coordinated documentation dependency, not a released resolver extension.
+The host/provider responsibilities below are a feature boundary grid, not another
+repository's implementation guide. Concrete host and provider contracts live with
+their owners; this bundle's runtime does not depend on those repositories.
+
+| Feature | Imagegen | Provider | Routing | Host |
+| --- | --- | --- | --- | --- |
+| Intent identity, original files, immutable receipt | REQUIRED | EXCLUDED filesystem | EXCLUDED | REQUIRED preserve/display |
+| Per-instance wire execution and native output parsing | EXCLUDED SDK policy | REQUIRED | EXCLUDED | EXCLUDED native transport |
+| Ordered candidate policy | EXCLUDED | EXCLUDED cross-provider rank | REQUIRED | IDIOM generic controls |
+| Effective admission and permission | REQUIRED respect | REQUIRED obey bound plan | REQUIRED preserve scope | REQUIRED enforce applicable guards |
+| Pixel inspection and result presentation | REQUIRED distinct evidence | EXCLUDED visual approval | EXCLUDED | IDIOM; no stronger claims |
+| Mandatory kernel image extension | EXCLUDED | EXCLUDED | EXCLUDED | EXCLUDED |
+
+REQUIRED describes adoption acceptance, not current conformance. IDIOM allows
+presentation differences; EXCLUDED identifies ownership or behavior not granted.
+
+## Source observations
+
+The initial direction follows source inspection, not a live inference trial:
+
+- `ad077609c84cb2e2b4ce971ddd16c504080ca937`: this bundle mounts `backend: images`;
+  `workspace.py` already preserves input hashes and durable non-replayed receipts.
+- The coordinator's generic role capability supports strategy-neutral consumers;
+  current role consumers differ in fallback behavior, so a required image output
+  must not inherit a chat default silently.
+- Native providers differ: one can use a mainline model plus a hosted image tool;
+  another directly returns native image/text outputs. Image-only models need not
+  support function tools. The shared exchange cannot equate these model roles.
+- Optional provider-native compaction is a precedent for capability detection
+  without making the kernel's required Provider protocol larger.
+
+Vendor/model preference evidence belongs to routing policy and provider-owned
+qualification, not to this capability's vision. Product UI image support and API
+entitlement are different facts. Only the selected connection can establish the latter.
+
+## Review and change discipline
+
+New headings are DRAFT. The accepted scope is portable routed images with no Core
+changes; exact new words and schema have not been ratified or frozen.
+A vision states the destination; contract clauses state observable promises;
+this note holds ownership, source facts and remaining review gates.
+
+No implementation ledger, task queue, scheduled check, manager operation or hook
+installation is created merely to establish these documents. No claim of full
+method adoption is made. Future locking requires a clear specification, a
+machine-checkable good/bad pair, a passing real implementation, a worked example
+at the user-visible boundary and the steward's decision.
+
+Amend draft text transparently; record accepted direction changes in its changelog.
+If a document is later locked, propose exact changes beside it and leave the
+locked target unchanged until approved. Do not copy private project records into
+these public sources. Cross-repository evidence uses explicit source revisions;
+installation manifests continue to follow their owning repository's source policy.

@@ -5,6 +5,12 @@ Composable image generation and editing for Amplifier, with a discoverable
 `tool-image` module ID, `image_generate` tool, Python package
 `amplifier_module_tool_image`, and `amplifier.image.receipt.v1` receipts.
 
+## Proposed direction
+
+[Vision and contracts](docs/DIRECTION.md) describe routed images through optional
+provider capabilities, without Core changes. They are drafts, not implemented
+support; the configuration and usage below remain the current behavior.
+
 ## Include the capability
 
 Add the bundle to an existing session configuration:
