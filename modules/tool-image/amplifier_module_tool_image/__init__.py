@@ -20,9 +20,7 @@ Tool Usage (Via Amplifier):
     ... })
 """
 
-from .generator import ImageGenerator
 from .models import ImageGenerationError, ImageResult
-from .tool import ImageGenerationTool
 
 __version__ = "0.1.0"
 __amplifier_module_type__ = "tool"
@@ -34,6 +32,17 @@ __all__ = [
     "mount",
 ]
 
+def __getattr__(name):
+    # Historical convenience APIs remain importable, but routed mounting does
+    # not import either vendor SDK or initialize a legacy client.
+    if name == "ImageGenerator":
+        from .generator import ImageGenerator
+        return ImageGenerator
+    if name == "ImageGenerationTool":
+        from .tool import ImageGenerationTool
+        return ImageGenerationTool
+    raise AttributeError(name)
+
 
 async def mount(coordinator, config=None):
     """Mount the workspace-safe tool; legacy library APIs remain independent.
@@ -43,13 +52,20 @@ async def mount(coordinator, config=None):
     explicitly selected and owned by this mount; existing host registrations are
     never overwritten.
     """
-    from .backends import register_builtin
     from .workspace import WorkspaceImageTool
+    from .routed import RoutedImageTool
 
     config = dict(config or {})
-    cleanup = register_builtin(coordinator, config)
+    async def cleanup():
+        pass
+    if config.get("builtin"):
+        from .backends import register_builtin
+        cleanup = register_builtin(coordinator, config)
     try:
-        tool = WorkspaceImageTool(coordinator, config)
+        # A saved explicit backend is a compatibility choice, never discarded
+        # merely because the newly composed behavior defaults to routing.
+        cls = WorkspaceImageTool if config.get("backend") else RoutedImageTool
+        tool = cls(coordinator, config)
         await coordinator.mount("tools", tool, name=tool.name)
     except BaseException:
         await cleanup()

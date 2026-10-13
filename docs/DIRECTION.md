@@ -1,9 +1,12 @@
 # Routed image direction: ownership and review
 
-This packet establishes proposed direction, not delivered routing support.
+This packet establishes proposed direction, not a release or deployment claim.
 The [README](../README.md) and [current tool documentation](../modules/tool-image/MODERN_TOOL.md)
-continue to describe the released named-backend path. No implementation, settings,
-provider policy, required Core interface or existing receipt is changed by these documents.
+now describe the routed source candidate and its retained explicit-backend path.
+The candidate implements optional operation methods without a required Core
+interface change. Combined offline qualification remains pending, and source
+inspection does not establish live entitlement, image quality or host delivery.
+The vision and contracts are still drafts, not ratified or frozen by this update.
 
 ## Read in order
 
@@ -12,7 +15,7 @@ provider policy, required Core interface or existing receipt is changed by these
    originals, workspace boundaries and verifiable outputs.
 3. [PI — provider exchange](../contracts/provider-image-operation.v1.md): optional
    preparation/execution without vendor or host dependencies.
-4. [Exchange specification](IMAGE-OPERATION-SPEC.md): proposed structural methods
+4. [Exchange specification](IMAGE-OPERATION-SPEC.md): current experimental methods
    and data shapes, subordinate to PI rather than a second set of promises.
 
 ## One owner per boundary
@@ -27,7 +30,9 @@ provider policy, required Core interface or existing receipt is changed by these
 | Composition, admission and presentation | Consuming host | Preserve restrictions; supply honest result evidence |
 
 The [generic consumer draft](https://github.com/microsoft/amplifier-foundation/blob/main/contracts/model-role-consumption.v1.md)
-is a coordinated documentation dependency, not a released resolver extension.
+remains a coordinated draft. Its source candidate supplies
+`operation_routing.prepare_operation` and negotiates
+`amplifier.operation-routing.v1`; this is not a claim of a released resolver extension.
 The host/provider responsibilities below are a feature boundary grid, not another
 repository's implementation guide. Concrete host and provider contracts live with
 their owners; this bundle's runtime does not depend on those repositories.
@@ -46,7 +51,9 @@ presentation differences; EXCLUDED identifies ownership or behavior not granted.
 
 ## Source observations
 
-The initial direction follows source inspection, not a live inference trial:
+The original direction followed these source observations, not a live inference
+trial. They are retained as the historical basis, not descriptions of the updated
+candidate:
 
 - `ad077609c84cb2e2b4ce971ddd16c504080ca937`: this bundle mounts `backend: images`;
   `workspace.py` already preserves input hashes and durable non-replayed receipts.
@@ -62,6 +69,27 @@ The initial direction follows source inspection, not a live inference trial:
 Vendor/model preference evidence belongs to routing policy and provider-owned
 qualification, not to this capability's vision. Product UI image support and API
 entitlement are different facts. Only the selected connection can establish the latter.
+
+## Current source candidate
+
+- `behaviors/imagegen.yaml` defaults to `model_role: image-gen` with no named
+  backend. Mount chooses `RoutedImageTool` unless an explicit `backend` retains
+  `WorkspaceImageTool`. The historical direct-library APIs are unchanged.
+- `routed.py` uses Foundation's generic preparation helper, local optional-method
+  negotiation and exact mounted instance identity. It stores intent separately
+  from route evidence and does not import provider or strategy implementations.
+- Coordinated provider candidates implement capabilities, preparation and
+  execution. OpenAI defaults to Responses; Gemini defaults to Interactions.
+  Compatibility transports require explicit selection. Their owners retain SDK
+  qualification and native request policy; no live account claim follows.
+- Host candidates compose the external behavior for fresh work. Unified replaces
+  image-only selection UI with non-writing legacy-intent translation; the CLI
+  composes defaults below the chosen root. Saved plans, retained pins, opt-outs
+  and host admission are qualification boundaries, not permission to broaden use.
+
+These are implementation observations, not a change to the accepted direction
+or a declaration that every IC/PI promise has passed. The original source notes,
+contract changelogs and approval limits remain intact.
 
 ## Review and change discipline
 

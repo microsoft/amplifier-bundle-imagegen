@@ -34,6 +34,8 @@ def image_info(data):
     with Image.open(io.BytesIO(data)) as image:
         if image.format not in {"PNG", "JPEG", "WEBP"}:
             raise ValueError("Use a PNG, JPEG or WebP image.")
+        if getattr(image, "n_frames", 1) != 1:
+            raise ValueError("Use a single-frame image.")
         if not 0 < image.width <= MAX_SIDE or not 0 < image.height <= MAX_SIDE:
             raise ValueError("Image dimensions exceed 4096 pixels per side.")
         result = {
@@ -43,7 +45,9 @@ def image_info(data):
             "mode": image.mode,
         }
         image.verify()
-        return result
+    with Image.open(io.BytesIO(data)) as image:
+        image.load()
+    return result
 
 
 class WorkspaceImageTool:
@@ -194,6 +198,9 @@ class WorkspaceImageTool:
             raise
 
     def read(self, path):
+        # Metadata is subject to the same effective read policy as image bytes.
+        # A denied receipt/request must not become readable via status/replay.
+        path = self.path(path)
         directory = self.directory_fd(path.parent)
         try:
             fd = os.open(

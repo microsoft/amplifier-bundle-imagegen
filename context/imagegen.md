@@ -2,8 +2,9 @@
 
 For raster generation or edits, discover and load the `imagegen` skill through
 `load_skill`. Inspect `image_generate` capabilities before making a request.
-The host explicitly selects the image backend, account and model independently
-of the conversational provider; missing configuration does not permit a fallback.
+The session's model routing selects a compatible image provider independently
+of the conversational model. Explicit legacy backends and paid-call opt-outs
+remain effective; missing routing or support never permits an invented fallback.
 
 Keep one request ID for each intended effect. Preserve originals and exact input
 hashes for edits. Inspect saved status after a timeout, cancellation or unknown
