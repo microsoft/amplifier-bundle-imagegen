@@ -192,6 +192,7 @@ class RoutedImageTool(WorkspaceImageTool):
         if not isinstance(outputs, list) or len(outputs) > 16:
             raise ValueError("Invalid image output list.")
         images, texts = [], []
+        geometry_error = False
         for output in outputs:
             if not isinstance(output, dict):
                 raise TypeError("Invalid image output.")
@@ -205,14 +206,14 @@ class RoutedImageTool(WorkspaceImageTool):
                 if output.get("mime_type") != "image/png" or info["mimeType"] != "image/png" or info["mode"] not in {"RGB", "RGBA"}:
                     raise ValueError("An RGB/RGBA PNG is required.")
                 if intent["options"]["size"] != "auto" and intent["options"]["size"] != f"{info['width']}x{info['height']}":
-                    raise ValueError("Output dimensions do not meet the request.")
+                    geometry_error = True
                 images.append((data, info))
             else:
                 raise ValueError("Unsupported final output kind.")
         text = "\n".join(texts)
         if len(text) > 32000 or len(images) > 4:
             raise ValueError("Provider image output exceeds the evidence limit.")
-        completed = result["status"] == "completed" and len(images) == 1
+        completed = result["status"] == "completed" and len(images) == 1 and not geometry_error
         status = "completed" if completed else ("failed" if result["status"] == "completed" else result["status"])
         models = result.get("models", [])
         metadata_error = False
@@ -235,6 +236,8 @@ class RoutedImageTool(WorkspaceImageTool):
             "receiptPath": str((folder / "receipt.json").relative_to(self.root)),
             "providerRequestId": (upstream or {}).get("request_id"),
             "upstream": upstream, "usage": usage, "text": text}
+        if geometry_error:
+            receipt["reasonCode"] = "output_control_mismatch"
         # Validate serializability/size before saving image bytes. Private native
         # continuation is intentionally not copied into public receipts.
         try:
