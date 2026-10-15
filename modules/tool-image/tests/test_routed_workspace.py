@@ -152,6 +152,36 @@ async def test_malformed_metadata_keeps_recoverable_bytes_without_success(tmp_pa
     assert path.read_bytes() == png()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_status", ["completed", "unknown"])
+async def test_geometry_mismatch_keeps_evidence_through_restart_without_replay(tmp_path, provider_status):
+    tool, provider, resolver, providers, caps = fixture(tmp_path)
+    original = provider.generate_image
+
+    async def mismatched(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        result["status"] = provider_status
+        return result
+
+    provider.generate_image = mismatched
+    request = {"action": "generate", "request_id": "one", "prompt": "first", "size": "1024x1024"}
+    first = await tool.execute(request)
+    assert not first.success and first.output["status"] != "completed"
+    assert "artifact" not in first.output
+    path = tmp_path / first.output["evidenceArtifacts"][0]["path"]
+    assert path.read_bytes() == png()
+    assert not (path.parent / "image.png").exists()
+    saved = {p.name: p.read_bytes() for p in path.parent.iterdir()}
+    providers.clear()
+    caps.pop("model_role_resolver")
+    restored = RoutedImageTool(tool.coordinator, {"allow_paid": True})
+    repeat = await restored.execute(request)
+    assert repeat.output == first.output
+    assert (await restored.execute({"action": "status", "request_id": "one"})).output == first.output
+    assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == saved
+    assert provider.calls == provider.prepares == resolver.resolve.await_count == 1
+
+
 def test_corrupt_pixel_stream_is_not_a_valid_image():
     import struct
     import zlib
