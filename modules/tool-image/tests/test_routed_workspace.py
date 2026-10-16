@@ -89,6 +89,197 @@ async def test_unknown_effect_never_reroutes_or_replays(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("selected_index", [0, 1])
+@pytest.mark.parametrize("same_controller", [False, True])
+async def test_negotiated_multiple_models_keep_the_selected_request(tmp_path, selected_index, same_controller):
+    class BoundProvider(Provider):
+        async def prepare_image_generation(self, request):
+            self.prepares += 1
+            return {
+                "protocol": PROTOCOL,
+                "supported": True,
+                "plan": {"selection": deepcopy(request["selection"])},
+            }
+
+        async def generate_image(self, request, *, plan):
+            assert request["selection"] == plan["selection"], "Prepared request changed"
+            self.executed_selection = deepcopy(request["selection"])
+            return await super().generate_image(request, plan=plan)
+
+    provider = BoundProvider()
+    tool, _, _, providers, caps = fixture(tmp_path, provider)
+    preferences = [
+        ProviderPreference(
+            provider="synthetic-blue",
+            model="agent-shared" if same_controller else f"agent-{index}",
+            config={"image_generation": {"model": f"image-{index}"}},
+        )
+        for index in range(2)
+    ]
+
+    async def resolve_for(role, *, requirements, accept):
+        assert role == "image-gen" and requirements["protocol"] == PROTOCOL
+        for preference in preferences:
+            assert await accept(preference) is True
+        return [preferences[selected_index]]
+
+    caps["model_role_resolver"] = SimpleNamespace(
+        operation_resolution_protocol="amplifier.operation-routing.v1",
+        resolve_for=resolve_for,
+    )
+    request = {"action": "generate", "request_id": "two-models", "prompt": "first"}
+    result = await tool.execute(request)
+    assert result.success and result.output["status"] == "completed"
+    expected = preferences[selected_index]
+    assert provider.executed_selection == {"model": expected.model, "config": expected.config}
+    assert provider.prepares == 2 and provider.calls == 1
+
+    saved = {path.name: path.read_bytes() for path in (tmp_path / "artifacts/images/two-models").iterdir()}
+    providers.clear()
+    caps.pop("model_role_resolver")
+    repeated = await RoutedImageTool(tool.coordinator, {"allow_paid": True}).execute(request)
+    assert repeated.output == result.output
+    assert provider.prepares == 2 and provider.calls == 1
+    assert {path.name: path.read_bytes() for path in (tmp_path / "artifacts/images/two-models").iterdir()} == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_healthy", [False, True])
+async def test_broken_local_descriptor_does_not_hide_other_connections(tmp_path, include_healthy):
+    class BrokenDescriptor(Provider):
+        def get_image_generation_capabilities(self):
+            raise RuntimeError("private-connection-detail-must-not-leak")
+
+    tool, healthy, resolver, providers, _ = fixture(tmp_path)
+    broken = BrokenDescriptor()
+    providers.clear()
+    providers["synthetic-broken"] = broken
+    if include_healthy:
+        providers["synthetic-blue"] = healthy
+    result = await tool.execute({"action": "capabilities"})
+    assert result.success
+    assert result.output["providerInstances"] == (["synthetic-blue"] if include_healthy else [])
+    assert result.output["ready"] is include_healthy
+    assert result.output["providerDiagnostics"] == [
+        {"providerInstance": "synthetic-broken", "reasonCode": "invalid_provider_capability"}
+    ]
+    assert "private-connection-detail-must-not-leak" not in repr(result)
+    assert broken.calls == broken.prepares == healthy.calls == healthy.prepares == 0
+    resolver.resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_selected_broken_descriptor_stops_without_fallback_or_secret(tmp_path):
+    class BrokenDescriptor(Provider):
+        def get_image_generation_capabilities(self):
+            raise RuntimeError("private-connection-detail-must-not-leak")
+
+    tool, healthy, resolver, providers, _ = fixture(tmp_path)
+    broken = BrokenDescriptor()
+    providers["synthetic-broken"] = broken
+    resolver.resolve.return_value.insert(
+        0, ProviderPreference(provider="synthetic-broken", model="agent-test")
+    )
+    assert (await tool.execute({"action": "capabilities"})).output["ready"] is True
+    resolver.resolve.assert_not_called()
+    result = await tool.execute({"action": "generate", "request_id": "broken", "prompt": "first"})
+    assert not result.success
+    resolver.resolve.assert_awaited_once_with("image-gen")
+    assert result.error["code"] == "invalid_provider_capability"
+    assert "private-connection-detail-must-not-leak" not in repr(result)
+    assert broken.calls == broken.prepares == healthy.calls == healthy.prepares == 0
+    assert not (tmp_path / "artifacts/images/broken").exists()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_descriptor_is_not_hidden_as_unsupported(tmp_path):
+    class CancelledDescriptor(Provider):
+        def get_image_generation_capabilities(self):
+            raise asyncio.CancelledError
+
+    tool, provider, _, _, _ = fixture(tmp_path, CancelledDescriptor())
+    with pytest.raises(asyncio.CancelledError):
+        await tool.execute({"action": "capabilities"})
+    assert provider.calls == provider.prepares == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["unsupported_sdk", "unsupported_interactions_sdk"])
+async def test_sdk_incompatibility_considers_only_declared_next_candidate(tmp_path, reason):
+    class RefusingProvider(Provider):
+        async def prepare_image_generation(self, request):
+            self.prepares += 1
+            return {"protocol": PROTOCOL, "supported": False, "reason_code": reason}
+
+    first = RefusingProvider()
+    tool, _, resolver, providers, _ = fixture(tmp_path, first)
+    second, undeclared = Provider(), Provider()
+    providers.update({"synthetic-green": second, "synthetic-other": undeclared})
+    resolver.resolve.return_value.append(ProviderPreference(provider="synthetic-green", model="agent-test"))
+    result = await tool.execute({"action": "generate", "request_id": "compatible", "prompt": "first"})
+    assert result.success and result.output["providerInstance"] == "synthetic-green"
+    assert first.prepares == 1 and first.calls == 0
+    assert second.prepares == second.calls == 1
+    assert undeclared.prepares == undeclared.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["binding_changed", "unsupported_sdk_or_binding", "unrecognized_refusal"])
+async def test_unknown_or_binding_refusals_never_authorize_next_candidate(tmp_path, reason):
+    class RefusingProvider(Provider):
+        async def prepare_image_generation(self, request):
+            self.prepares += 1
+            return {"protocol": PROTOCOL, "supported": False, "reason_code": reason}
+
+    first = RefusingProvider()
+    tool, _, resolver, providers, _ = fixture(tmp_path, first)
+    second = Provider()
+    providers["synthetic-green"] = second
+    resolver.resolve.return_value.append(ProviderPreference(provider="synthetic-green", model="agent-test"))
+    result = await tool.execute({"action": "generate", "request_id": "refused", "prompt": "first"})
+    assert not result.success
+    assert first.prepares == 1 and first.calls == second.prepares == second.calls == 0
+    assert not (tmp_path / "artifacts/images/refused/request.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "dispatch", "reason"),
+    [
+        ("failed", "response_received", "invalid_response"),
+        ("unknown", "unknown", "generation_outcome_unknown"),
+        ("unknown", "response_received", "incomplete_response"),
+    ],
+)
+async def test_result_dispatch_evidence_survives_direct_retry_and_status(tmp_path, status, dispatch, reason):
+    tool, provider, resolver, providers, caps = fixture(tmp_path)
+    original = provider.generate_image
+
+    async def unsuccessful(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        result.update(status=status, dispatch_state=dispatch, reason_code=reason)
+        return result
+
+    provider.generate_image = unsuccessful
+    request = {"action": "generate", "request_id": "outcome", "prompt": "first"}
+    first = await tool.execute(request)
+    assert not first.success
+    assert first.output["status"] == status
+    assert first.output["dispatchState"] == dispatch
+    assert first.output["reasonCode"] == reason
+    evidence = tmp_path / first.output["evidenceArtifacts"][0]["path"]
+    assert evidence.read_bytes() == png()
+    saved = {path.name: path.read_bytes() for path in evidence.parent.iterdir()}
+    providers.clear()
+    caps.pop("model_role_resolver")
+    restored = RoutedImageTool(tool.coordinator, {"allow_paid": True})
+    assert (await restored.execute(request)).output == first.output
+    assert (await restored.execute({"action": "status", "request_id": "outcome"})).output == first.output
+    assert {path.name: path.read_bytes() for path in evidence.parent.iterdir()} == saved
+    assert provider.prepares == provider.calls == resolver.resolve.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_denied_file_and_paid_policy_precede_preparation(tmp_path):
     tool, provider, resolver, _, _ = fixture(tmp_path)
     request = {"action": "generate", "request_id": "one", "prompt": "first"}
