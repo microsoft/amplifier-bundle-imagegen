@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from copy import deepcopy
 
 from amplifier_core import ToolResult
@@ -24,11 +25,20 @@ PROTOCOL = "amplifier.image-operation.v1"
 METHODS = ("get_image_generation_capabilities", "prepare_image_generation", "generate_image")
 
 
+class InvalidProviderCapability(ValueError):
+    code = "invalid_provider_capability"
+
+
 def supported(provider):
-    if not all(callable(getattr(provider, name, None)) for name in METHODS):
-        return False
-    descriptor = provider.get_image_generation_capabilities()
-    return isinstance(descriptor, dict) and descriptor.get("protocol") == PROTOCOL and descriptor.get("supported") is True
+    try:
+        if not all(callable(getattr(provider, name, None)) for name in METHODS):
+            return False
+        descriptor = provider.get_image_generation_capabilities()
+        return isinstance(descriptor, dict) and descriptor.get("protocol") == PROTOCOL and descriptor.get("supported") is True
+    except Exception:
+        # A broken contract is not incompatibility or permission to fall back.
+        # Cancellation and process termination are BaseExceptions and propagate.
+        raise InvalidProviderCapability("Provider image capability inspection failed.") from None
 
 
 class RoutedImageTool(WorkspaceImageTool):
@@ -53,14 +63,22 @@ class RoutedImageTool(WorkspaceImageTool):
             missing.append("model_role_resolver")
         # Inspect local support only; never resolve a route, list remote models,
         # allocate a plan or consume strategy escalation state in discovery.
-        available = []
+        available, diagnostics = [], []
         for key, provider in providers.items():
-            if supported(provider):
-                available.append(key)
+            try:
+                if supported(provider):
+                    available.append(key)
+            except InvalidProviderCapability:
+                if len(diagnostics) < 16:
+                    diagnostics.append({
+                        "providerInstance": key if isinstance(key, str) and len(key) <= 200 else None,
+                        "reasonCode": "invalid_provider_capability",
+                    })
         if not available:
             missing.append("image_operation_provider")
         return {"backend": "model-routing", "modelRole": self.config.get("model_role", "image-gen"),
                 "ready": not missing, "missing": missing, "providerInstances": available,
+                "providerDiagnostics": diagnostics,
                 "route": "not_selected", "entitlement": "unverified_until_successful_request",
                 "limits": {"outputFormat": "png", "imagesPerRequest": 1, "maxInputImages": 4,
                            "maxBytes": MAX_BYTES, "maxSide": MAX_SIDE},
@@ -124,24 +142,26 @@ class RoutedImageTool(WorkspaceImageTool):
                             "output": {"count": 1, "mime_type": "image/png", **intent["options"]}}
             from amplifier_foundation.operation_routing import prepare_operation
 
-            prepared_requests = {}
+            prepared_requests = []
             async def prepare(provider, preference):
                 if not supported(provider):
                     return None
-                request = {**base_request, "selection": {"model": preference.model,
-                                                         "config": deepcopy(preference.config or {})}}
+                bound_preference = deepcopy(preference)
+                request = {**deepcopy(base_request), "selection": {"model": bound_preference.model,
+                                                         "config": deepcopy(bound_preference.config or {})}}
                 outcome = await provider.prepare_image_generation(request)
                 if not isinstance(outcome, dict) or outcome.get("protocol") != PROTOCOL or type(outcome.get("supported")) is not bool:
                     raise ValueError("Invalid provider image preparation result.")
                 if outcome["supported"] is False:
                     if outcome.get("reason_code") not in {"unsupported_connection", "unsupported_model_or_transport", "unsupported_model",
-                        "unsupported_transport", "unsupported_controller", "unsupported_output", "unsupported_controls", "unsupported_sdk", "unsupported_reference_count"}:
+                        "unsupported_transport", "unsupported_controller", "unsupported_output", "unsupported_controls", "unsupported_sdk",
+                        "unsupported_interactions_sdk", "unsupported_reference_count"}:
                         raise ValueError("Provider image preparation failed; no fallback authorized.")
                     return None
                 plan = outcome.get("plan")
                 if not isinstance(plan, dict) or len(encoded(plan)) > 65536:
                     raise ValueError("Invalid or oversized provider image plan.")
-                prepared_requests[id(provider)] = request
+                prepared_requests.append((provider, bound_preference, request))
                 return plan
 
             # Validate every possible output before preparation or admission.
@@ -150,7 +170,11 @@ class RoutedImageTool(WorkspaceImageTool):
             selected = await prepare_operation(self.coordinator, self.config.get("model_role", "image-gen"),
                 {"protocol": PROTOCOL, "operation": action, "output": base_request["output"]}, prepare,
                 preferences=self.config.get("provider_preferences"))
-            request = prepared_requests[id(selected.provider)]
+            matches = [request for provider, preference, request in prepared_requests
+                       if provider is selected.provider and preference == selected.preference]
+            if len(matches) != 1:
+                raise ValueError("The selected image request was not prepared exactly once.")
+            request = matches[0]
             parent = self.directory_fd(folder.parent, create=True)
             try:
                 try:
@@ -236,6 +260,14 @@ class RoutedImageTool(WorkspaceImageTool):
             "receiptPath": str((folder / "receipt.json").relative_to(self.root)),
             "providerRequestId": (upstream or {}).get("request_id"),
             "upstream": upstream, "usage": usage, "text": text}
+        # Preserve received-versus-uncertain evidence independently of outcome.
+        # Optional malformed fields are omitted, never echoed or inferred.
+        dispatch = result.get("dispatch_state")
+        if isinstance(dispatch, str) and dispatch in {"not_sent", "response_received", "unknown"}:
+            receipt["dispatchState"] = dispatch
+        reason = result.get("reason_code")
+        if isinstance(reason, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason):
+            receipt["reasonCode"] = reason
         if geometry_error:
             receipt["reasonCode"] = "output_control_mismatch"
         # Validate serializability/size before saving image bytes. Private native
