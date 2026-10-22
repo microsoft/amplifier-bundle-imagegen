@@ -36,6 +36,15 @@ or native image model chosen for an image request.
 entitlement has been established. `routing_blocked` reports
 `legacy_image_selection_requires_review` rather than selecting a new account.
 
+Discovery isolates an ordinary descriptor-inspection exception to the affected
+provider and adds a safe `invalid_provider_capability` entry to
+`providerDiagnostics` (at most 16 entries, without raw exception text).
+Other providers remain discoverable. Missing/unsupported optional methods or a
+wrong protocol are absence of support, not inspection exceptions. Cancellation
+and `KeyboardInterrupt`/`SystemExit` propagate rather than becoming diagnostics.
+During candidate preparation, the same inspection exception is a hard failure,
+not permission to traverse candidates.
+
 For each new effect, Foundation's
 `amplifier_foundation.operation_routing.prepare_operation` binds an exact mounted
 instance. A resolver may negotiate `amplifier.operation-routing.v1` through
@@ -52,9 +61,21 @@ Each eligible provider must expose the complete optional
 operation config accepts neither credentials, `enabled`, timeout nor effort.
 Provider/host settings still own connection policy and admission.
 
-Preparation can reject incompatible controls before execution. Only recognized
-compatibility refusals can advance through permitted candidates; malformed
-responses, provider failures and denials do not authorize another account.
+Preparation can reject incompatible controls before execution. A provider's
+`supported: false` result permits traversal only for recognized compatibility
+reason codes; malformed responses, provider failures and denials do not authorize
+another account.
+`unsupported_interactions_sdk` is an explicit incompatibility that may advance
+only to a declared next candidate. `unsupported_sdk_or_binding`, unrecognized
+reason codes and binding failures remain terminal for traversal. No refusal
+authorizes an invented candidate or transport switch outside that declared
+sequence.
+The full allowlist is in the [exchange specification](../../docs/IMAGE-OPERATION-SPEC.md#preparation-and-bound-plan).
+
+Selection must match exactly one successfully prepared request by provider
+object identity and equality with the full preference copied before preparation.
+It does not match by provider alone, model alone or plan object identity.
+No match or multiple matches fail before the durable claim.
 The selected provider executes the prepared plan without a tool-owned SDK,
 model substitution or post-dispatch fallback.
 
@@ -134,6 +155,20 @@ bytes/hash/dimensions and backend/model; routed receipts add `providerInstance`,
 Unknown IDs, usage or observed model versions remain unknown. No static price
 estimate is treated as actual cost.
 
+Routed receipts can also carry optional `dispatchState` and `reasonCode`.
+The consumer copies provider `dispatch_state` only for `not_sent`,
+`response_received` or `unknown`, and `reason_code` only when it matches
+`[a-z][a-z0-9_]{0,63}`; missing or malformed values are omitted. These are
+additive, shape-validated provider evidence, not outcome or replay authority.
+A provider-normalized received-invalid result marked failed remains failed;
+an otherwise valid unknown result can retain `response_received` and stay
+unknown. Within retained-output bounds, wrong cardinality/geometry on a completed
+result or detected invalid receipt metadata produces failed. Malformed
+result/output shapes, over-limit output, invalid image bytes or execution
+exceptions can instead leave conservative unknown state.
+Exceptions do not invent dispatch evidence. Local validation may replace
+`reasonCode` with `output_control_mismatch` or `invalid_provider_metadata`.
+
 For an edit, inspect the target first and supply its current SHA-256. The first
 input is the target; up to three additional inputs are references:
 
@@ -198,8 +233,12 @@ Offline fixtures cover real SDK request serialization against fake HTTP, Core
 mount/schema/cleanup, no fallback/replay, cancellation, concurrent duplicate
 claims, edit lineage and path races. Routed fixtures additionally cover optional
 method negotiation, exact-instance preparation and intent identity across policy
-changes. These coverage targets do not report a completed qualification of the
-combined candidate. SDK dependency floors are the versions
+changes. Separately reported installed-package checks with synthetic providers
+and no network calls qualify narrow routing/receipt behavior only; see the
+[qualification boundary](../../docs/IMAGE-OPERATION-SPEC.md#qualification-boundary).
+Neither these checks nor this source-only documentation review establish
+real-provider SDK, combined-candidate or live host/account acceptance.
+SDK dependency floors are the versions
 qualified for these image/retry/transport APIs, not a claim that every older
 release is incompatible. Google is bounded below 3 because this SDK marks
 `generate_images` for removal in the next major release. Real account entitlement, image quality, service-side

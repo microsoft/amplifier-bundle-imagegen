@@ -28,11 +28,24 @@ branding or an image-input flag.
 
 The tool's `capabilities` action inspects these local descriptors only. It does
 not call the resolver or preparation, and reports `route: not_selected`.
+An ordinary descriptor-inspection exception is isolated to that provider during
+discovery: `providerDiagnostics` retains up to 16 entries with
+`reasonCode: invalid_provider_capability` and the provider instance key (a string
+of at most 200 characters, otherwise null), never the raw exception.
+Other providers can still report support. Missing methods, wrong protocol or
+`supported` other than `true` simply report no support; these are not the same as
+an inspection exception. Cancellation, `KeyboardInterrupt` and `SystemExit`
+propagate rather than becoming diagnostics.
+
 Preparation uses Foundation's `operation_routing.prepare_operation`; compatible
 resolvers advertise `operation_resolution_protocol = "amplifier.operation-routing.v1"`
 and implement `resolve_for(role, *, requirements, accept)`. Provider preferences
 must identify exact mounted keys. Ordinary `resolve(role)` remains supported,
 but only its returned preferences may be considered.
+When a candidate is evaluated for preparation, descriptor inspection runs again.
+An inspection exception there is a hard `invalid_provider_capability` failure,
+not incompatibility or permission to try another candidate. Discovery's diagnostic
+handling does not turn a selected candidate's broken descriptor into fallback.
 
 ## Request
 
@@ -88,11 +101,37 @@ supported: true  + protocol + plan
 supported: false + protocol + reason_code + safe_message
 ```
 
+For a `supported: false` preparation result, only these `reason_code` values
+permit traversal, and only to a next candidate already declared by the resolver
+or explicit preferences:
+
+```text
+unsupported_connection, unsupported_model_or_transport, unsupported_model,
+unsupported_transport, unsupported_controller, unsupported_output,
+unsupported_controls, unsupported_sdk, unsupported_interactions_sdk,
+unsupported_reference_count
+```
+
+In particular, `unsupported_interactions_sdk` can allow that declared next
+candidate; it cannot invent a replacement or switch transport outside that
+declared sequence.
+The ambiguous `unsupported_sdk_or_binding`, unrecognized reason codes, malformed
+preparation results, provider exceptions and binding failures are terminal for
+traversal. They do not authorize another account or transport.
+
 The current adapters' plans contain `protocol`, an opaque `id`, `request_hash`,
 `transport`, native image `model`, a `controller` model or null, and `output`
 requirements. Gemini also freezes its effective `timeout`. Plans are plain
 JSON-serializable data, bounded to 64 KiB by the consumer. These are provider-owned
 shapes, not a universal list of required plan keys for other implementations.
+
+For each successful preparation, the consumer retains the provider object, a
+deep copy of the full preference taken before preparation, and that prepared
+request. It associates the resolver's selection with exactly one such request
+using provider object identity and full preference equality. Provider identity
+alone, selected model alone and plan object identity are not the match key.
+No match or multiple matches fail before the durable request claim; a copied
+plan does not change which prepared request is selected.
 
 Providers retain a private copy and connection snapshot behind the opaque plan
 ID; credentials and endpoint details are not serialized into it. The consumer
@@ -154,6 +193,29 @@ carry `reason_code` and known dispatch state without raw SDK exception bodies.
 Cancellation propagates while the operation owner preserves conservative state.
 The runtime guarantees no automatic replay, not exactly-once execution upstream.
 
+For a result that reaches receipt construction, optional `dispatch_state` is
+copied to receipt `dispatchState` only when it is `not_sent`,
+`response_received` or `unknown`. Optional `reason_code` becomes `reasonCode`
+only when it matches `[a-z][a-z0-9_]{0,63}`. Missing or malformed optional values
+are omitted, not echoed, inferred or themselves treated as a failed result.
+These are validated additive fields on `amplifier.image.receipt.v1`, not a
+required receipt-version change or independently verified transport observations.
+Local checks can replace `reasonCode` with `output_control_mismatch` or
+`invalid_provider_metadata`.
+
+Dispatch evidence and outcome are separate. A provider-normalized invalid
+response returned as `status: failed` with `dispatch_state: response_received`
+remains failed. An otherwise valid `status: unknown` result can retain
+`response_received` and remain unknown. Within the retained-output bounds, a
+returned `completed` result with wrong image cardinality or requested geometry
+becomes failed; detected invalid receipt metadata also produces failed. This is
+not a promise that every invalid response becomes failed: malformed result/output
+shapes, over-limit output or invalid image bytes can raise during validation and
+enter the conservative unknown exception path.
+An execution exception, including uncertain transport, leaves an unknown receipt
+without inventing dispatch evidence. Neither `not_sent` nor any other evidence
+permits replay of the claimed identity or a fallback attempt.
+
 Outputs retain ordering and all bounded final artifacts. Imagegen validates bytes
 independently; its one-image promise refuses unsupported cardinality. It can
 retain up to four validated images as `evidenceArtifacts` for a failed result,
@@ -176,7 +238,11 @@ than claiming a new frozen receipt contract.
 Required fixtures cover each PI clause with a passing and failing example,
 including a wholly unrelated synthetic provider. Installed-package integration
 must confirm both real provider adapters speak these shapes without peer imports.
+Separately reported installed-package evidence covers 28 existing cases with
+synthetic providers and no network calls. That is narrow routing/receipt
+qualification, not qualification of real-provider SDK transports or the combined
+candidate. This documentation alignment is a source review, not a new test run.
 Live generate/edit, host delivery, pixel inspection and account entitlement remain
 separate gates. Combined candidate qualification is pending; this document
-records no newly executed tests, live calls or deployment acceptance. Earlier
-named-backend evidence does not qualify the routed path.
+establishes no live calls or deployment acceptance. Earlier named-backend evidence
+does not qualify the routed path.
