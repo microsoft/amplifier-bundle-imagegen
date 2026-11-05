@@ -18,6 +18,7 @@ from .workspace import (
     WorkspaceImageTool,
     digest,
     encoded,
+    has_transparency,
     image_info,
 )
 
@@ -39,6 +40,17 @@ def supported(provider):
         # A broken contract is not incompatibility or permission to fall back.
         # Cancellation and process termination are BaseExceptions and propagate.
         raise InvalidProviderCapability("Provider image capability inspection failed.") from None
+
+
+def _same_request(left, right):
+    """Compare the complete preparation input without bool/int or byte aliases."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_same_request(left[key], right[key]) for key in left)
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(_same_request(a, b) for a, b in zip(left, right))
+    return left == right
 
 
 class RoutedImageTool(WorkspaceImageTool):
@@ -149,7 +161,12 @@ class RoutedImageTool(WorkspaceImageTool):
                 bound_preference = deepcopy(preference)
                 request = {**deepcopy(base_request), "selection": {"model": bound_preference.model,
                                                          "config": deepcopy(bound_preference.config or {})}}
-                outcome = await provider.prepare_image_generation(request)
+                # Keep the admitted input private: preparation may retain its
+                # argument, but must not rewrite intent, controls or selection.
+                preparation_request = deepcopy(request)
+                outcome = await provider.prepare_image_generation(preparation_request)
+                if not _same_request(preparation_request, request):
+                    raise ValueError("Provider mutated the prepared image request.")
                 if not isinstance(outcome, dict) or outcome.get("protocol") != PROTOCOL or type(outcome.get("supported")) is not bool:
                     raise ValueError("Invalid provider image preparation result.")
                 if outcome["supported"] is False:
@@ -161,7 +178,7 @@ class RoutedImageTool(WorkspaceImageTool):
                 plan = outcome.get("plan")
                 if not isinstance(plan, dict) or len(encoded(plan)) > 65536:
                     raise ValueError("Invalid or oversized provider image plan.")
-                prepared_requests.append((provider, bound_preference, request))
+                prepared_requests.append((provider, bound_preference, request, preparation_request))
                 return plan
 
             # Validate every possible output before preparation or admission.
@@ -170,7 +187,11 @@ class RoutedImageTool(WorkspaceImageTool):
             selected = await prepare_operation(self.coordinator, self.config.get("model_role", "image-gen"),
                 {"protocol": PROTOCOL, "operation": action, "output": base_request["output"]}, prepare,
                 preferences=self.config.get("provider_preferences"))
-            matches = [request for provider, preference, request in prepared_requests
+            # An operation-aware resolver may await more candidates after the
+            # first preparation. Reject retained-argument mutations there too.
+            if any(not _same_request(observed, request) for _, _, request, observed in prepared_requests):
+                raise ValueError("Provider mutated the prepared image request.")
+            matches = [request for provider, preference, request, _ in prepared_requests
                        if provider is selected.provider and preference == selected.preference]
             if len(matches) != 1:
                 raise ValueError("The selected image request was not prepared exactly once.")
@@ -216,7 +237,7 @@ class RoutedImageTool(WorkspaceImageTool):
         if not isinstance(outputs, list) or len(outputs) > 16:
             raise ValueError("Invalid image output list.")
         images, texts = [], []
-        geometry_error = False
+        geometry_error = background_error = False
         for output in outputs:
             if not isinstance(output, dict):
                 raise TypeError("Invalid image output.")
@@ -231,13 +252,16 @@ class RoutedImageTool(WorkspaceImageTool):
                     raise ValueError("An RGB/RGBA PNG is required.")
                 if intent["options"]["size"] != "auto" and intent["options"]["size"] != f"{info['width']}x{info['height']}":
                     geometry_error = True
+                background = intent["options"]["background"]
+                if background != "auto" and has_transparency(data) != (background == "transparent"):
+                    background_error = True
                 images.append((data, info))
             else:
                 raise ValueError("Unsupported final output kind.")
         text = "\n".join(texts)
         if len(text) > 32000 or len(images) > 4:
             raise ValueError("Provider image output exceeds the evidence limit.")
-        completed = result["status"] == "completed" and len(images) == 1 and not geometry_error
+        completed = result["status"] == "completed" and len(images) == 1 and not (geometry_error or background_error)
         status = "completed" if completed else ("failed" if result["status"] == "completed" else result["status"])
         models = result.get("models", [])
         metadata_error = False
@@ -270,6 +294,8 @@ class RoutedImageTool(WorkspaceImageTool):
             receipt["reasonCode"] = reason
         if geometry_error:
             receipt["reasonCode"] = "output_control_mismatch"
+        elif background_error:
+            receipt["reasonCode"] = "output_background_mismatch"
         # Validate serializability/size before saving image bytes. Private native
         # continuation is intentionally not copied into public receipts.
         try:

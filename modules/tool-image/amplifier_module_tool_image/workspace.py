@@ -50,6 +50,12 @@ def image_info(data):
     return result
 
 
+def has_transparency(data):
+    """Inspect pixel alpha, including RGB PNG tRNS, not just the image mode."""
+    with Image.open(io.BytesIO(data)) as image:
+        return image.convert("RGBA").getchannel("A").getextrema()[0] < 255
+
+
 class WorkspaceImageTool:
     name = "image_generate"
     description = (
@@ -437,13 +443,7 @@ class WorkspaceImageTool:
                         if status == "completed":
                             status, reason = "failed", "output_dimensions_mismatch"
                     if options["background"] != "auto":
-                        with Image.open(io.BytesIO(data)) as image:
-                            # Pixel alpha, including RGB PNG tRNS, determines
-                            # opacity; an RGBA mode alone proves neither choice.
-                            transparent = (
-                                image.convert("RGBA").getchannel("A").getextrema()[0]
-                                < 255
-                            )
+                        transparent = has_transparency(data)
                         if transparent != (options["background"] == "transparent"):
                             if status == "completed":
                                 status, reason = "failed", "output_background_mismatch"

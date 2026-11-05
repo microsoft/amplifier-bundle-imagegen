@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -11,9 +12,10 @@ from amplifier_module_tool_image.routed import PROTOCOL, RoutedImageTool
 from PIL import Image
 
 
-def png():
+def png(mode="RGB", color="red", transparency=None):
     output = BytesIO()
-    Image.new("RGB", (12, 8), "red").save(output, format="PNG")
+    options = {} if transparency is None else {"transparency": transparency}
+    Image.new(mode, (12, 8), color).save(output, format="PNG", **options)
     return output.getvalue()
 
 
@@ -141,6 +143,141 @@ async def test_negotiated_multiple_models_keep_the_selected_request(tmp_path, se
     assert repeated.output == result.output
     assert provider.prepares == 2 and provider.calls == 1
     assert {path.name: path.read_bytes() for path in (tmp_path / "artifacts/images/two-models").iterdir()} == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (("prompt",), "changed prompt"),
+        (("request_id",), "changed-id"),
+        (("protocol",), "changed-protocol"),
+        (("operation",), "generate"),
+        (("output", "size"), "1024x1024"),
+        (("output", "quality"), "high"),
+        (("output", "background"), "transparent"),
+        (("output", "count"), 2),
+        (("output", "count"), True),
+        (("output", "mime_type"), "image/jpeg"),
+        (("inputs", 0, "data"), b"changed input bytes"),
+        (("inputs", 0, "sha256"), "0" * 64),
+        (("inputs", 0, "purpose"), "reference"),
+        (("inputs", 0, "mime_type"), "image/jpeg"),
+        (("inputs",), []),
+        (("selection", "model"), "changed-controller"),
+        (("selection", "config", "image_generation", "model"), "changed-image"),
+    ],
+    ids=[
+        "prompt", "id", "protocol", "operation", "size", "quality", "background",
+        "count", "count-type", "mime", "input-bytes", "input-hash", "input-role",
+        "input-mime", "input-list", "controller", "image-model",
+    ],
+)
+async def test_preparation_cannot_rewrite_dispatched_request(tmp_path, field, value):
+    class MutatingProvider(Provider):
+        async def prepare_image_generation(self, request):
+            target = request
+            for key in field[:-1]:
+                target = target[key]
+            target[field[-1]] = value
+            return await super().prepare_image_generation(request)
+
+    tool, first, resolver, providers, _ = fixture(tmp_path, MutatingProvider())
+    second = Provider()
+    providers["synthetic-green"] = second
+    resolver.resolve.return_value.append(ProviderPreference(provider="synthetic-green", model="agent-test"))
+    preferences_before = deepcopy(resolver.resolve.return_value)
+    original = png()
+    (tmp_path / "original.png").write_bytes(original)
+    request = {"action": "edit", "request_id": "mutated", "prompt": "original prompt",
+               "images": [{"path": "original.png", "sha256": hashlib.sha256(original).hexdigest()}]}
+    before = deepcopy(request)
+
+    result = await tool.execute(request)
+
+    assert not result.success
+    assert result.error["message"] == "Provider mutated the prepared image request."
+    assert first.prepares == 1
+    assert first.calls == second.prepares == second.calls == 0
+    assert not (tmp_path / "artifacts/images/mutated").exists()
+    assert request == before
+    assert resolver.resolve.return_value == preferences_before
+    assert (tmp_path / "original.png").read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_mutated_preparation_cannot_authorize_incompatibility_fallback(tmp_path):
+    class MutatingRefusal(Provider):
+        async def prepare_image_generation(self, request):
+            self.prepares += 1
+            request["prompt"] = "changed prompt"
+            return {"protocol": PROTOCOL, "supported": False, "reason_code": "unsupported_model"}
+
+    tool, first, resolver, providers, _ = fixture(tmp_path, MutatingRefusal())
+    second = Provider()
+    providers["synthetic-green"] = second
+    resolver.resolve.return_value.append(ProviderPreference(provider="synthetic-green", model="agent-test"))
+    result = await tool.execute({"action": "generate", "request_id": "refused-mutation", "prompt": "original"})
+    assert not result.success
+    assert result.error["message"] == "Provider mutated the prepared image request."
+    assert first.prepares == 1
+    assert first.calls == second.prepares == second.calls == 0
+    assert not (tmp_path / "artifacts/images/refused-mutation").exists()
+
+
+@pytest.mark.asyncio
+async def test_retained_preparation_argument_mutation_before_selection_refuses(tmp_path):
+    class RetainingProvider(Provider):
+        async def prepare_image_generation(self, request):
+            self.retained = request
+            return await super().prepare_image_generation(request)
+
+    tool, provider, resolver, _, caps = fixture(tmp_path, RetainingProvider())
+    preference = resolver.resolve.return_value[0]
+
+    async def resolve_for(role, *, requirements, accept):
+        assert await accept(preference) is True
+        provider.retained["prompt"] = "changed after preparation"
+        return [preference]
+
+    caps["model_role_resolver"] = SimpleNamespace(
+        operation_resolution_protocol="amplifier.operation-routing.v1",
+        resolve_for=resolve_for,
+    )
+    result = await tool.execute({"action": "generate", "request_id": "late-mutation", "prompt": "original"})
+    assert not result.success
+    assert result.error["message"] == "Provider mutated the prepared image request."
+    assert provider.prepares == 1 and provider.calls == 0
+    assert not (tmp_path / "artifacts/images/late-mutation").exists()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_private_copy_of_unchanged_prepared_request(tmp_path):
+    class RetainingProvider(Provider):
+        async def prepare_image_generation(self, request):
+            self.retained = request
+            self.snapshot = deepcopy(request)
+            return await super().prepare_image_generation(request)
+
+        async def generate_image(self, request, *, plan):
+            assert request is not self.retained
+            assert request["output"] is not self.retained["output"]
+            assert request["selection"] is not self.retained["selection"]
+            self.retained["prompt"] = "retained argument cannot rewrite dispatch"
+            self.retained["output"]["background"] = "transparent"
+            assert request == self.snapshot
+            return await super().generate_image(request, plan=plan)
+
+    tool, provider, _, _, _ = fixture(tmp_path, RetainingProvider())
+    request = {"action": "generate", "request_id": "private-copy", "prompt": "original"}
+    result = await tool.execute(request)
+    assert result.success and provider.prepares == provider.calls == 1
+    saved = json.loads((tmp_path / "artifacts/images/private-copy/request.json").read_text())
+    assert saved["prompt"] == provider.snapshot["prompt"] == request["prompt"]
+    assert saved["options"] == {key: provider.snapshot["output"][key] for key in ("size", "quality", "background")}
+    intent = {key: saved[key] for key in ("action", "prompt", "options", "inputs")}
+    from amplifier_module_tool_image.workspace import digest, encoded
+    assert saved["requestHash"] == result.output["requestHash"] == digest(encoded(intent))
 
 
 @pytest.mark.asyncio
@@ -369,6 +506,77 @@ async def test_geometry_mismatch_keeps_evidence_through_restart_without_replay(t
     repeat = await restored.execute(request)
     assert repeat.output == first.output
     assert (await restored.execute({"action": "status", "request_id": "one"})).output == first.output
+    assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == saved
+    assert provider.calls == provider.prepares == resolver.resolve.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("background", "mode", "color", "transparency", "matches", "provider_status"),
+    [
+        ("transparent", "RGB", "red", None, False, "completed"),
+        ("transparent", "RGBA", (255, 0, 0, 255), None, False, "completed"),
+        ("opaque", "RGBA", (255, 0, 0, 128), None, False, "completed"),
+        ("opaque", "RGB", "red", (255, 0, 0), False, "completed"),
+        ("transparent", "RGB", "red", (0, 255, 0), False, "completed"),
+        ("transparent", "RGBA", (255, 0, 0, 128), None, True, "completed"),
+        ("transparent", "RGB", "red", (255, 0, 0), True, "completed"),
+        ("opaque", "RGBA", (255, 0, 0, 255), None, True, "completed"),
+        ("opaque", "RGB", "red", None, True, "completed"),
+        ("opaque", "RGB", "red", (0, 255, 0), True, "completed"),
+        ("auto", "RGB", "red", None, True, "completed"),
+        ("auto", "RGBA", (255, 0, 0, 128), None, True, "completed"),
+        ("auto", "RGB", "red", (255, 0, 0), True, "completed"),
+        ("transparent", "RGB", "red", None, False, "unknown"),
+    ],
+    ids=[
+        "transparent-rgb-opaque", "transparent-rgba-opaque", "opaque-rgba-alpha",
+        "opaque-rgb-trns", "transparent-rgb-unused-trns", "transparent-rgba-alpha",
+        "transparent-rgb-trns", "opaque-rgba-opaque", "opaque-rgb-opaque",
+        "opaque-rgb-unused-trns", "auto-rgb", "auto-rgba", "auto-rgb-trns",
+        "unknown-preserved",
+    ],
+)
+async def test_background_pixels_and_receipt_survive_restart_without_replay(
+    tmp_path, background, mode, color, transparency, matches, provider_status
+):
+    output = png(mode, color, transparency)
+    tool, provider, resolver, providers, caps = fixture(tmp_path)
+    generate = provider.generate_image
+
+    async def result_with_pixels(*args, **kwargs):
+        result = await generate(*args, **kwargs)
+        result.update(status=provider_status)
+        result["outputs"][0]["data"] = output
+        return result
+
+    provider.generate_image = result_with_pixels
+    request = {"action": "generate", "request_id": "background", "prompt": "original",
+               "background": background}
+    first = await tool.execute(request)
+    if matches:
+        assert first.success and first.output["status"] == "completed"
+        assert "evidenceArtifacts" not in first.output
+        artifact = first.output["artifact"]
+    else:
+        assert not first.success
+        assert first.output["status"] == ("failed" if provider_status == "completed" else provider_status)
+        assert first.output["reasonCode"] == "output_background_mismatch"
+        assert "artifact" not in first.output
+        assert len(first.output["evidenceArtifacts"]) == 1
+        artifact = first.output["evidenceArtifacts"][0]
+        assert not (tmp_path / "artifacts/images/background/image.png").exists()
+    assert first.output["options"]["background"] == background
+    path = tmp_path / artifact["path"]
+    assert path.read_bytes() == output
+    assert artifact["sha256"] == hashlib.sha256(output).hexdigest()
+    assert artifact["bytes"] == len(output)
+    saved = {p.name: p.read_bytes() for p in path.parent.iterdir()}
+    providers.clear()
+    caps.pop("model_role_resolver")
+    restored = RoutedImageTool(tool.coordinator, {"allow_paid": True})
+    assert (await restored.execute(request)).output == first.output
+    assert (await restored.execute({"action": "status", "request_id": "background"})).output == first.output
     assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == saved
     assert provider.calls == provider.prepares == resolver.resolve.await_count == 1
 
