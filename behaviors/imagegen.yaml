@@ -1,19 +1,19 @@
 bundle:
   name: imagegen
   version: 0.1.0
-  description: Image tools and guidance using an explicitly configured backend.
+  description: Image tools and guidance using model routing and provider capabilities.
   namespace_root: ..
 
 includes:
   - bundle: imagegen:behaviors/skills.yaml
 
 # Opting into this behavior permits requested paid image calls. It does not
-# install a provider or choose credentials/model; the host supplies that backend.
+# install a provider or choose credentials/model; the active routing policy does.
 tools:
   - module: tool-image
     source: git+https://github.com/microsoft/amplifier-bundle-imagegen@main#subdirectory=modules/tool-image
     config:
-      backend: images
+      model_role: image-gen
       allow_paid: true
 
 context:

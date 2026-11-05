@@ -22,9 +22,9 @@ from amplifier_module_tool_image.clients import (
 from amplifier_module_tool_image.workspace import WorkspaceImageTool
 
 
-def png():
+def png(size=8):
     stream = io.BytesIO()
-    Image.new("RGB", (8, 8), "blue").save(stream, format="PNG")
+    Image.new("RGB", (size, size), "blue").save(stream, format="PNG")
     return stream.getvalue()
 
 
@@ -390,7 +390,7 @@ async def test_real_core_host_capability_generation_and_cleanup(tmp_path):
             "model": "host-model",
             "operations": ["generate"],
         },
-        generate=AsyncMock(return_value={"data": png()}),
+        generate=AsyncMock(return_value={"data": png(1024)}),
     )
     session.coordinator.register_capability("image.backends", {"host": backend})
     cleanup = await mount(session.coordinator, {"backend": "host", "allow_paid": True})
@@ -399,7 +399,7 @@ async def test_real_core_host_capability_generation_and_cleanup(tmp_path):
         {"action": "generate", "request_id": "host", "prompt": "Square"}
     )
     assert result.success and result.output["model"] == "host-model"
-    assert (tmp_path / result.output["artifact"]["path"]).read_bytes() == png()
+    assert (tmp_path / result.output["artifact"]["path"]).read_bytes() == png(1024)
     await cleanup()
     assert session.coordinator.get_capability("image.backends")["host"] is backend
     await session.cleanup()

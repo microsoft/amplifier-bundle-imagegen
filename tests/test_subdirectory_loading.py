@@ -52,7 +52,7 @@ async def test_source_fragment_mount_discovery_and_explicit_paid_opt_out(tmp_pat
         assert tool.input_schema["properties"]["action"]["enum"] == ["capabilities", "generate", "edit", "status"]
         report = await tool.execute({"action": "capabilities"})
         assert report.success and not report.output["ready"]
-        missing = "paid_image_calls_not_enabled" if disable_paid else "selected_image_backend_not_mounted"
+        missing = "paid_image_calls_not_enabled" if disable_paid else "model_role_resolver"
         assert missing in report.output["missing"]
         assert report.output["entitlement"] == "unverified_until_successful_request"
         result = await tool.execute({"action": "generate", "request_id": "not-authorized", "prompt": "No call."})

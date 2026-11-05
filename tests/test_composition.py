@@ -35,7 +35,7 @@ async def test_portable_entry_points_resolve_their_own_namespace(manifest, tmp_p
     else:
         assert tool(bundle, "tool-image") == {
             "module": "tool-image", "source": IMAGE_SOURCE,
-            "config": {"backend": "images", "allow_paid": True},
+            "config": {"model_role": "image-gen", "allow_paid": True},
         }
         assert ROOT / "context/imagegen.md" in bundle.context.values()
 

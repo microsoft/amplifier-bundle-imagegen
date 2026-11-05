@@ -26,8 +26,9 @@ preserving accepted parts.
 
 When `image_generate` is mounted, call `action: capabilities` first. A ready
 configuration is not proof of account entitlement; only a completed provider call
-establishes access. The host selects the image backend and model independently of
-the conversation model. Do not enable paid calls or change accounts implicitly.
+establishes access. The session's routing selects a compatible image provider and
+model independently of the conversation model. Do not enable paid calls, clear
+retained pins/opt-outs or change accounts implicitly.
 Use a stable `request_id` for one intended effect. For edits, provide each input's
 actual path and SHA-256; the first input is the target and the rest are references.
 Keep original files and saved output IDs. A timeout, cancellation or `unknown`

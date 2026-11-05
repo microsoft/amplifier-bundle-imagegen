@@ -13,9 +13,9 @@ from amplifier_module_tool_image import mount
 from amplifier_module_tool_image.workspace import WorkspaceImageTool as ImageTool
 
 
-def png(color="red"):
+def png(color="red", *, size=(1024, 1024), mode="RGB"):
     buffer = io.BytesIO()
-    Image.new("RGB", (32, 32), color).save(buffer, format="PNG")
+    Image.new(mode, size, color).save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -63,6 +63,198 @@ def request(identity="first", **kwargs):
         "prompt": "An original red square.",
         **kwargs,
     }
+
+
+def assert_evidence(root, receipt, data):
+    assert receipt["status"] != "completed" and "artifact" not in receipt
+    (artifact,) = receipt["evidenceArtifacts"]
+    folder = root / "artifacts/images" / receipt["requestId"]
+    assert root / artifact["path"] == folder / "evidence-0.png"
+    assert (root / artifact["path"]).read_bytes() == data
+    assert artifact["sha256"] == hashlib.sha256(data).hexdigest()
+    assert artifact["bytes"] == len(data)
+    with Image.open(io.BytesIO(data)) as image:
+        assert artifact["width"] == image.width
+        assert artifact["height"] == image.height
+        assert artifact["mode"] == image.mode
+    assert artifact["mimeType"] == "image/png"
+    assert not (folder / "image.png").exists()
+    assert json.loads((folder / "receipt.json").read_text()) == receipt
+
+
+@pytest.mark.parametrize("action", ["generate", "edit"])
+@pytest.mark.parametrize("explicit", [True, False], ids=["explicit", "default"])
+async def test_wrong_requested_size_is_evidence_and_never_replayed(
+    setup, action, explicit
+):
+    tool, backend, root, capabilities = setup
+    output = png("blue", size=(32, 32))
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), "data": output}
+
+    backend.generate = generate
+    args = request(action=action, **({"size": "1024x1024"} if explicit else {}))
+    original = png("green")
+    if action == "edit":
+        (root / "original.png").write_bytes(original)
+        args["images"] = [
+            {"path": "original.png", "sha256": hashlib.sha256(original).hexdigest()}
+        ]
+    first = await tool.execute(args)
+    assert not first.success and first.output["status"] == "failed"
+    assert first.output["reasonCode"] == "output_dimensions_mismatch"
+    assert_evidence(root, first.output, output)
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(args)
+    assert not repeated.success and repeated.output == first.output
+    status = await restarted.execute({"action": "status", "request_id": "first"})
+    assert status.success and status.output == first.output
+    assert len(backend.calls) == 1
+    assert backend.calls[0]["size"] == "1024x1024"
+    if action == "edit":
+        assert (root / "original.png").read_bytes() == original
+        assert backend.calls[0]["images"][0]["data"] == original
+
+
+@pytest.mark.parametrize(
+    "background,mode,color",
+    [
+        ("transparent", "RGB", "red"),
+        ("transparent", "RGBA", (255, 0, 0, 255)),
+        ("opaque", "RGBA", (255, 0, 0, 128)),
+    ],
+)
+async def test_wrong_requested_background_is_evidence_not_success(
+    setup, background, mode, color
+):
+    tool, backend, root, capabilities = setup
+    output = png(color, mode=mode)
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), "data": output}
+
+    backend.generate = generate
+    args = request(background=background)
+    first = await tool.execute(args)
+    assert not first.success and first.output["status"] == "failed"
+    assert first.output["reasonCode"] == "output_background_mismatch"
+    assert_evidence(root, first.output, output)
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(args)
+    assert not repeated.success and repeated.output == first.output
+    assert len(backend.calls) == 1
+
+
+async def test_rgb_png_transparency_is_checked_from_pixels(setup):
+    tool, backend, root, _ = setup
+    buffer = io.BytesIO()
+    Image.new("RGB", (1024, 1024), "red").save(
+        buffer, format="PNG", transparency=(255, 0, 0)
+    )
+    output = buffer.getvalue()
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), "data": output}
+
+    backend.generate = generate
+    first = await tool.execute(request(background="opaque"))
+    assert not first.success
+    assert first.output["reasonCode"] == "output_background_mismatch"
+    assert_evidence(root, first.output, output)
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.parametrize("backend_status", ["failed", "blocked", "unknown"])
+async def test_backend_noncompleted_status_keeps_png_as_evidence_and_guard(
+    setup, backend_status
+):
+    tool, backend, root, capabilities = setup
+    original_generate = backend.generate
+    invocations = []
+
+    async def generate(**args):
+        return {
+            **await original_generate(**args),
+            "status": backend_status,
+            "reason": "incomplete_image_result",
+            "model": "actual-fixture",
+            "usage": {"images": 1},
+            "text": "Incomplete result, not a delivered image.",
+        }
+
+    async def invoke(selected, args):
+        assert selected is backend
+        invocations.append(args)
+        return await selected.generate(**args)
+
+    backend.generate = generate
+    capabilities["image.backend_invoke"] = invoke
+    first = await tool.execute(request(size="1024x1024", background="opaque"))
+    assert not first.success and first.output["status"] == backend_status
+    assert first.output["reasonCode"] == "incomplete_image_result"
+    assert first.output["model"] == "actual-fixture"
+    assert first.output["providerRequestId"] == "fixture-call"
+    assert first.output["usage"] == {"images": 1}
+    assert_evidence(root, first.output, png())
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(request(size="1024x1024", background="opaque"))
+    assert not repeated.success and repeated.output == first.output
+    assert len(backend.calls) == len(invocations) == 1
+
+
+@pytest.mark.parametrize("backend_status", [None, "", "pending", False, {}, []])
+async def test_invalid_backend_status_cannot_become_success(setup, backend_status):
+    tool, backend, root, _ = setup
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), "status": backend_status}
+
+    backend.generate = generate
+    first = await tool.execute(request())
+    assert not first.success and first.output["status"] == "unknown"
+    assert_evidence(root, first.output, png())
+    repeated = await tool.execute(request())
+    assert not repeated.success and repeated.output == first.output
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.parametrize("fields", [{}, {"status": "completed"}], ids=["legacy", "status"])
+@pytest.mark.parametrize(
+    "size,background,mode,color",
+    [
+        ("1024x1024", "opaque", "RGB", "red"),
+        ("1536x1024", "opaque", "RGBA", (255, 0, 0, 255)),
+        ("1024x1536", "transparent", "RGBA", (255, 0, 0, 128)),
+    ],
+)
+async def test_matching_explicit_controls_complete_with_or_without_backend_status(
+    setup, fields, size, background, mode, color
+):
+    tool, backend, root, capabilities = setup
+    dimensions = tuple(map(int, size.split("x")))
+    output = png(color, size=dimensions, mode=mode)
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), **fields, "data": output}
+
+    backend.generate = generate
+    args = request(size=size, background=background)
+    first = await tool.execute(args)
+    assert first.success, first.error
+    assert first.output["status"] == "completed"
+    assert "evidenceArtifacts" not in first.output
+    assert (root / first.output["artifact"]["path"]).read_bytes() == output
+    assert not (root / "artifacts/images/first/evidence-0.png").exists()
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(args)
+    assert repeated.success and repeated.output == first.output
+    assert len(backend.calls) == 1
 
 
 async def test_generation_edit_lineage_exact_bytes_and_no_replay_after_restart(setup):
@@ -319,7 +511,10 @@ async def test_invalid_resolved_model_preserves_unknown_effect_without_replay(se
     backend.generate = generate
     result = await tool.execute(request())
     assert not result.success and result.output["status"] == "unknown"
-    assert (await tool.execute(request())).output == result.output
+    assert_evidence(root, result.output, png())
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(request())
+    assert not repeated.success and repeated.output == result.output
     assert len(backend.calls) == 1
 
 
@@ -331,12 +526,21 @@ async def test_backend_automatic_controls_and_accompanying_text_are_durable(setu
         'options': dict(size=['auto'], quality=['auto'], background=['auto']),
     }
     original_generate = backend.generate
+    output = png((255, 0, 0, 128), size=(32, 32), mode="RGBA")
+
     async def generate(**args):
-        return {**await original_generate(**args), 'model': 'resolved-image-model', 'text': 'A red square.'}
+        return {
+            **await original_generate(**args),
+            "data": output,
+            "model": "resolved-image-model",
+            "text": "A red square.",
+        }
+
     backend.generate = generate
     first = await tool.execute(request())
     assert first.success, first.error
     assert first.output['text'] == 'A red square.'
+    assert (root / first.output["artifact"]["path"]).read_bytes() == output
     assert first.output['options'] == dict(size='auto', quality='auto', background='auto')
     assert backend.calls[0]['quality'] == 'auto'
     assert (await tool.execute(request())).output == first.output
@@ -354,5 +558,136 @@ async def test_invalid_accompanying_text_is_unknown_and_never_replayed(setup, te
     backend.generate = generate
     first = await tool.execute(request())
     assert not first.success and first.output['status'] == 'unknown'
-    assert (await tool.execute(request())).output['status'] == 'unknown'
+    assert_evidence(root, first.output, png())
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(request())
+    assert not repeated.success and repeated.output == first.output
     assert len(backend.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"request_id": {}},
+        {"request_id": "x" * 1025},
+        {"usage": []},
+        {"usage": {"native": object()}},
+        {"usage": {"oversized": "x" * 128001}},
+    ],
+)
+async def test_late_invalid_metadata_preserves_paid_png_without_success_or_replay(
+    setup, metadata
+):
+    tool, backend, root, capabilities = setup
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {**await original_generate(**args), **metadata}
+
+    backend.generate = generate
+    first = await tool.execute(request())
+    assert not first.success and first.output["status"] == "unknown"
+    assert first.error["code"] == "image_outcome_unknown"
+    assert_evidence(root, first.output, png())
+    restarted = ImageTool(SimpleNamespace(get_capability=capabilities.get), tool.config)
+    repeated = await restarted.execute(request())
+    assert not repeated.success and repeated.output == first.output
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "output",
+    [b"not a PNG", png(size=(4097, 1))],
+    ids=["undecodable", "oversized"],
+)
+async def test_invalid_image_bytes_are_not_retained_as_evidence(setup, output):
+    tool, backend, root, _ = setup
+    original_generate = backend.generate
+
+    async def generate(**args):
+        return {
+            **await original_generate(**args),
+            "data": output,
+            "status": "failed",
+            "reason": "incomplete_image_result",
+        }
+
+    backend.generate = generate
+    first = await tool.execute(request())
+    assert not first.success and first.output["status"] == "unknown"
+    assert "artifact" not in first.output and "evidenceArtifacts" not in first.output
+    assert not list((root / "artifacts/images/first").glob("*.png"))
+    repeated = await tool.execute(request())
+    assert not repeated.success and repeated.output == first.output
+    assert len(backend.calls) == 1
+
+
+async def test_evidence_destination_denied_before_claim_or_backend_invocation(setup):
+    tool, backend, root, capabilities = setup
+    invocations = []
+
+    async def invoke(selected, args):
+        invocations.append(args)
+        return await selected.generate(**args)
+
+    capabilities["image.backend_invoke"] = invoke
+    tool.config["denied_write_paths"] = ["artifacts/images/first/evidence-0.png"]
+    result = await tool.execute(request())
+    assert not result.success and "Access denied" in result.error["message"]
+    assert not invocations and not backend.calls
+    assert not (root / "artifacts").exists()
+
+
+@pytest.mark.parametrize("name", ["receipt.json", "evidence-0.png"])
+async def test_saved_evidence_respects_read_policy_for_status_and_repeat(setup, name):
+    tool, backend, root, _ = setup
+    first = await tool.execute(request(size="1536x1024"))
+    assert not first.success
+    assert_evidence(root, first.output, png())
+    tool.config["denied_read_paths"] = [f"artifacts/images/first/{name}"]
+    status = await tool.execute({"action": "status", "request_id": "first"})
+    repeated = await tool.execute(request(size="1536x1024"))
+    for result in (status, repeated):
+        assert not result.success and "Access denied" in result.error["message"]
+    assert len(backend.calls) == 1
+
+
+async def test_saved_evidence_repeat_respects_request_read_policy(setup):
+    tool, backend, root, _ = setup
+    first = await tool.execute(request(size="1536x1024"))
+    assert_evidence(root, first.output, png())
+    tool.config["denied_read_paths"] = ["artifacts/images/first/request.json"]
+    repeated = await tool.execute(request(size="1536x1024"))
+    assert not repeated.success and "Access denied" in repeated.error["message"]
+    assert len(backend.calls) == 1
+
+
+async def test_corrupt_evidence_is_not_silently_accepted_or_replayed(setup):
+    tool, backend, root, _ = setup
+    first = await tool.execute(request(size="1536x1024"))
+    (root / first.output["evidenceArtifacts"][0]["path"]).write_bytes(png("blue"))
+    for args in (
+        {"action": "status", "request_id": "first"},
+        request(size="1536x1024"),
+    ):
+        result = await tool.execute(args)
+        assert not result.success and "no longer matches" in result.error["message"]
+    assert len(backend.calls) == 1
+
+
+async def test_backend_invocation_guard_refusal_never_dispatches_or_replays(setup):
+    tool, backend, _root, capabilities = setup
+    invocations = []
+
+    async def invoke(selected, args):
+        invocations.append(args)
+        raise PermissionError("private admission refusal")
+
+    capabilities["image.backend_invoke"] = invoke
+    first = await tool.execute(request())
+    assert not first.success and first.output["status"] == "unknown"
+    assert "private admission refusal" not in json.dumps(first.model_dump())
+    assert "artifact" not in first.output and "evidenceArtifacts" not in first.output
+    repeated = await tool.execute(request())
+    assert not repeated.success and repeated.output == first.output
+    assert len(invocations) == 1 and not backend.calls

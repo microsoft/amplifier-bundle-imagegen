@@ -9,6 +9,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
     "openai>=3.16.1",
     "google-genai>=2.23.0,<3",
     "aiohttp>=3.9.0",
@@ -45,6 +46,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_tool_image"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
