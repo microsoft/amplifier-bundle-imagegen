@@ -15,7 +15,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "httpx>=0.28.1,<1",
     "pydantic>=2.0.0",
-    "Pillow>=11,<13",
+    "Pillow>=11,<14",
 ]
 
 [project.entry-points."amplifier.tool"]
